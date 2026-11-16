@@ -3,6 +3,7 @@
 #include "Effects.h"
 #include "Programs.h"
 #include "SampleTools.h"
+#include "PianoSet.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -35,7 +36,7 @@ struct Voice
     // user-sample voices
     bool isSample = false, kill = false; double pos = 0;
     std::shared_ptr<const Audio> audio;
-    struct SampleParams { int root = 60, mode = 0; float tune = 0, cutoff = 20000, att = 0.002f, rel = 0.15f, loopS = 0.4f, loopE = 0.9f; } sp;
+    struct SampleParams { int root = 60, mode = 0; float tune = 0, cutoff = 20000, att = 0.002f, rel = 0.15f, loopS = 0.4f, loopE = 0.9f; bool flat = false; } sp;
     // control-rate values
     double inc1 = 0, inc2 = 0, atkInc = 0, fG = 0.1, fK = 1.0, ampGain = 0;
 };
@@ -70,6 +71,7 @@ public:
             const PartCfg& pc = parts[(size_t) p];
             if (pc.level <= 0.0001f || note < pc.lo || note > pc.hi) continue;
             if (std::max(0, std::min(kAllPrograms - 1, pc.prog)) == kUserProgram) { triggerSamples(p, ch, note, vel); continue; }
+            if (pc.prog == 0 && piano && pianoOn && piano->valid()) { triggerPiano(p, ch, note, vel); continue; }
             Voice& v = allocate();
             v = Voice();
             v.active = true; v.note = note; v.part = p; v.ch = ch; v.vel = vel; v.age = ++ageCounter;
@@ -100,6 +102,7 @@ public:
     void modWheel(int ch, float v) { mod[ch & 15] = v; }
     void allNotesOff() { for (auto& v : voices) if (v.active) { v.releasing = true; v.kill = true; } }
     void setBank(std::shared_ptr<const SampleBank> b) { bank = std::move(b); }
+    void setPiano(std::shared_ptr<const PianoSet> p, bool on) { piano = std::move(p); pianoOn = on; }
     int activeVoices() const { int n = 0; for (auto& v : voices) n += v.active ? 1 : 0; return n; }
 
     // ---------------- audio
@@ -143,6 +146,21 @@ private:
         }
     }
 
+    void triggerPiano(int p, int ch, int note, float vel)
+    {
+        const PartCfg& pc = parts[(size_t) p];
+        int root = 60; const int target = note + pc.transpose;
+        auto audio = piano->pick(target, (int) std::lround(vel * 127.0f), root);
+        if (!audio) return;
+        Voice& v = allocate();
+        v = Voice();
+        v.active = true; v.isSample = true; v.audio = std::move(audio); v.note = note; v.part = p; v.ch = ch; v.vel = vel; v.age = ++ageCounter;
+        v.zoneNote = target; v.level = pc.level * 0.9f;
+        const double pn = std::max(-1.0f, std::min(1.0f, pc.pan)) * 0.7853981633974483;
+        v.gl = (float) std::cos(pn + 0.7853981633974483); v.gr = (float) std::sin(pn + 0.7853981633974483);
+        v.sp.root = root; v.sp.mode = SmpGate; v.sp.tune = 0; v.sp.cutoff = 20000.0f; v.sp.att = 0.0008f; v.sp.rel = 0.30f; v.sp.flat = true;
+    }
+
     void triggerSamples(int p, int ch, int note, float vel)
     {
         if (!bank) return;
@@ -184,7 +202,7 @@ private:
         const bool filt = sp.cutoff < std::min(19000.0, 0.45 * sr);
         const double aA = sp.att * g.attackScale, aR = sp.rel * g.releaseScale;
         const bool rel = v.releasing && (!oneShot || v.kill);
-        const double velG = 0.4 + 0.6 * v.vel;
+        const double velG = sp.flat ? 1.0 : 0.4 + 0.6 * v.vel;   // piano layers already carry the dynamics
 
         for (int i0 = 0; i0 < n; i0 += kControl)
         {
@@ -255,7 +273,9 @@ private:
         const int zone2 = std::max(0, std::min(kZones - 1, (int) std::floor((v.zoneNote + p.semi2 + 0.5) / 6.0)));
         const float* t1 = rom.loop(p.w1, zone);
         const float* t2 = rom.loop(p.w2, zone2);
-        const std::vector<float>* atk = p.atk >= 0 ? &rom.attack(p.atk) : nullptr;
+        const int atkId = p.atk >= 0 ? WaveRom::attackFor(p.atk, v.zoneNote) : -1;
+        const std::vector<float>* atk = atkId >= 0 ? &rom.attack(atkId) : nullptr;
+        const double atkRoot = WaveRom::attackRootNote(atkId);
         const double nyq = 0.45 * sr;
         const double invSr = 1.0 / sr;
 
@@ -272,7 +292,7 @@ private:
             const double n1 = v.zoneNote + vibr - p.det * 0.005, n2 = v.zoneNote + p.semi2 + vibr + p.det * 0.005;
             const double f1 = 440.0 * std::exp2((n1 - 69.0) / 12.0), f2 = 440.0 * std::exp2((n2 - 69.0) / 12.0);
             v.inc1 = f1 * kTable * invSr; v.inc2 = f2 * kTable * invSr;
-            v.atkInc = std::exp2(((double) v.zoneNote + vibr - 60.0) / 12.0) * (kAttackRate * invSr);
+            v.atkInc = std::exp2(((double) v.zoneNote + vibr - atkRoot) / 12.0) * (kAttackRate * invSr);
 
             double cut = p.cutoff * std::exp2(p.envAmt * v.fltLvl + p.keyTrack * (v.zoneNote - 60) / 12.0
                                               + (v.vel - 0.64) * 2.0 * p.velFlt + lfo * p.lfoFilt * g.lfoScale
@@ -300,6 +320,7 @@ private:
                 v.ph1 += v.inc1; if (v.ph1 >= kTable) v.ph1 -= kTable;
                 v.ph2 += v.inc2; if (v.ph2 >= kTable) v.ph2 -= kTable;
 
+                s *= p.loopLvl;
                 if (p.xfade > 0.0f) s *= std::min(1.0, v.tNote / (double) p.xfade);
                 if (atk && v.atkPos < (double) atk->size() - 1.0)
                 {
@@ -332,5 +353,6 @@ private:
     float bend[16] = {}, mod[16] = {}; bool pedal[16] = {};
     uint64_t ageCounter = 0;
     std::shared_ptr<const SampleBank> bank;
+    std::shared_ptr<const PianoSet> piano; bool pianoOn = false;
 };
 } // namespace pcm

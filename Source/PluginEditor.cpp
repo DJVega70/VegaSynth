@@ -368,6 +368,58 @@ private:
 };
 
 //==============================================================================
+class PianoPage : public juce::Component, private juce::Timer
+{
+public:
+    PianoPage(PcmSynthProcessor& p, SynthLook& laf) : proc(p), bar(progress)
+    {
+        load.setButtonText("LOAD PIANO FOLDER..."); addAndMakeVisible(load);
+        load.onClick = [this] { choose(); };
+        quality.addItem("Light  (4 velocity layers, ~0.2 GB RAM)", 1); quality.addItem("Medium  (8 layers, ~0.4 GB RAM)", 2); quality.addItem("Full  (all 16 layers, ~0.8 GB RAM)", 3);
+        quality.setSelectedId(proc.getPianoQuality() + 1, juce::dontSendNotification); quality.setLookAndFeel(&laf); addAndMakeVisible(quality);
+        quality.onChange = [this] { const auto f = proc.getPianoFolder(); if (f.isDirectory()) proc.loadPianoFolder(f, quality.getSelectedId() - 1); };
+        use.setButtonText("Use the real piano for the Grand Piano sound (P00)"); use.setToggleState(proc.isPianoEnabled(), juce::dontSendNotification);
+        use.onClick = [this] { proc.setPianoEnabled(use.getToggleState()); }; addAndMakeVisible(use);
+        addAndMakeVisible(bar); bar.setColour(juce::ProgressBar::foregroundColourId, amber); bar.setColour(juce::ProgressBar::backgroundColourId, juce::Colour(0xff0d0e10));
+        startTimerHz(8);
+    }
+    ~PianoPage() override { stopTimer(); quality.setLookAndFeel(nullptr); }
+    void resized() override
+    {
+        load.setBounds(10, 36, 230, 30); quality.setBounds(254, 38, 330, 26);
+        bar.setBounds(10, 82, 574, 14); use.setBounds(10, 150, 520, 26);
+    }
+    void paint(juce::Graphics& g) override
+    {
+        g.setColour(amber); g.fillRoundedRectangle(4.0f, 2.0f, 4.0f, 12.0f, 1.5f);
+        g.setColour(ink.withAlpha(0.9f)); g.setFont(juce::FontOptions(11.0f, juce::Font::bold)); g.drawText("REAL PIANO (multisample folder)", 14, 0, 500, 16, juce::Justification::centredLeft);
+        g.setColour(juce::Colours::white.withAlpha(0.10f)); g.drawHorizontalLine(19, 4.0f, 944.0f);
+        g.setColour(ink); g.setFont(juce::FontOptions(12.5f)); g.drawText(proc.getPianoStatus(), 10, 104, 930, 20, juce::Justification::centredLeft);
+        g.setColour(dim); g.setFont(juce::FontOptions(11.5f));
+        g.drawFittedText("HOW TO GET A REAL PIANO\n"
+            "1. Download the Salamander Grand Piano V3, the 16-bit 44.1 kHz WAV version, from its page on sfzinstruments.github.io (free, license CC BY 3.0 - give credit if you release music with it).\n"
+            "2. Unzip it anywhere on your computer.\n"
+            "3. Press LOAD PIANO FOLDER and pick the unzipped folder (the one with files like A0v1.wav and C4v10.wav). Subfolders are searched.\n"
+            "4. Wait for the bar to finish. The folder is remembered, so new PCM Workstation instances load it automatically.\n\n"
+            "Any other piano recorded as note + velocity files works too, if the file names contain the note and layer, like C4v8.wav or F#3_v12.wav.\n"
+            "Until a folder is loaded, the built-in synth piano plays.",
+            juce::Rectangle<int>(10, 190, 920, 200), juce::Justification::topLeft, 12);
+    }
+private:
+    void choose()
+    {
+        const auto start = proc.getPianoFolder().isDirectory() ? proc.getPianoFolder() : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        chooser = std::make_unique<juce::FileChooser>("Pick the piano sample folder", start);
+        chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this](const juce::FileChooser& fc) {
+            const auto f = fc.getResult(); if (f.isDirectory()) proc.loadPianoFolder(f, quality.getSelectedId() - 1); });
+    }
+    void timerCallback() override { progress = proc.pianoBusy.load() ? (double) proc.pianoProgress.load() : (proc.pianoReady.load() ? 1.0 : 0.0); repaint(10, 100, 930, 28); }
+    PcmSynthProcessor& proc; double progress = 0.0;
+    juce::TextButton load; juce::ComboBox quality; juce::ToggleButton use; juce::ProgressBar bar;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
+//==============================================================================
 class PadsPage : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
 {
 public:
@@ -532,17 +584,18 @@ public:
             fxKnob[i][2] = knob(("fx" + s + "mix").toRawUTF8(), "Mix", red, [](double v) { return juce::String(juce::roundToInt(v * 100)) + "%"; });
         }
 
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
-            static const char* tn[3] = { "SYNTH", "SAMPLES", "PADS" };
+            static const char* tn[4] = { "SYNTH", "SAMPLES", "PADS", "PIANO" };
             tab[i].setButtonText(tn[i]); tab[i].setClickingTogglesState(false); addAndMakeVisible(tab[i]);
             tab[i].onClick = [this, i] { setTab(i); };
         }
         samples = std::make_unique<SamplesPage>(proc, laf); addChildComponent(*samples);
         pads = std::make_unique<PadsPage>(proc, laf, [this](const juce::StringArray& f, int slot) { samples->loadFiles(f, slot); });
         addChildComponent(*pads);
+        pianoPage = std::make_unique<PianoPage>(proc, laf); addChildComponent(*pianoPage);
         addAndMakeVisible(joystick);
-        keyboard.setAvailableRange(36, 96); keyboard.setKeyWidth(21.8f); keyboard.setScrollButtonsVisible(false);
+        keyboard.setAvailableRange(12, 108); keyboard.setKeyWidth(21.8f); keyboard.setScrollButtonsVisible(true); keyboard.setLowestVisibleKey(36);
         keyboard.setColour(juce::MidiKeyboardComponent::keyDownOverlayColourId, amber.withAlpha(0.7f));
         keyboard.setColour(juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, amber.withAlpha(0.25f));
         keyboard.setMidiChannel(1);
@@ -553,7 +606,7 @@ public:
     }
     ~Content() override
     {
-        stopTimer(); samples.reset(); pads.reset(); setLookAndFeel(nullptr); data.setLookAndFeel(nullptr);
+        stopTimer(); samples.reset(); pads.reset(); pianoPage.reset(); setLookAndFeel(nullptr); data.setLookAndFeel(nullptr);
         for (auto& r : row) for (auto* s : { &r.lvl, &r.pan, &r.lo, &r.hi, &r.tr, &r.ch }) s->setLookAndFeel(nullptr);
     }
 
@@ -631,8 +684,8 @@ public:
             fxType[i].setBounds(x0, 398, 110, 24);
             for (int k = 0; k < 3; ++k) fxKnob[i][k]->setBounds(x0 + 130 + k * 108, 394, 100, 112);
         }
-        for (int i = 0; i < 3; ++i) tab[i].setBounds(30 + i * 74, 98, 70, 20);
-        samples->setBounds(20, 122, 940, 396); pads->setBounds(20, 122, 940, 396);
+        for (int i = 0; i < 4; ++i) tab[i].setBounds(30 + i * 58, 98, 56, 20);
+        samples->setBounds(20, 122, 940, 396); pads->setBounds(20, 122, 940, 396); pianoPage->setBounds(20, 122, 940, 396);
         joystick.setBounds(24, 520, 128, 160);
         keyboard.setBounds(170, 524, 790, 156);
     }
@@ -648,12 +701,12 @@ private:
     void setTab(int t)
     {
         curTab = t;
-        for (int i = 0; i < 3; ++i) tab[i].setToggleState(i == t, juce::dontSendNotification);
+        for (int i = 0; i < 4; ++i) tab[i].setToggleState(i == t, juce::dontSendNotification);
         const bool s = t == 0;
         for (size_t i = 1; i < knobs.size(); ++i) knobs[i]->setVisible(s);
         for (auto& r : row) for (juce::Component* k : std::initializer_list<juce::Component*>{ &r.num, &r.prog, &r.lvl, &r.pan, &r.lo, &r.hi, &r.tr, &r.ch }) k->setVisible(s);
         for (auto& f : fxType) f.setVisible(s);
-        samples->setVisible(t == 1); pads->setVisible(t == 2);
+        samples->setVisible(t == 1); pads->setVisible(t == 2); pianoPage->setVisible(t == 3);
         repaint();
     }
     int mode() const { return juce::roundToInt(proc.apvts.getRawParameterValue("mode")->load()); }
@@ -715,7 +768,7 @@ private:
     Knob* fxKnob[2][3] = {};
     JoystickPad joystick;
     juce::MidiKeyboardComponent keyboard;
-    juce::TextButton tab[3]; std::unique_ptr<SamplesPage> samples; std::unique_ptr<PadsPage> pads; int curTab = 0;
+    juce::TextButton tab[4]; std::unique_ptr<SamplesPage> samples; std::unique_ptr<PadsPage> pads; std::unique_ptr<PianoPage> pianoPage; int curTab = 0;
     juce::String lcd1, lcd2, lcd3;
     float meter = 0.0f; int selPart = 1; bool updating = false;
 };

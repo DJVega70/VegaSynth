@@ -71,7 +71,7 @@ PcmSynthProcessor::PcmSynthProcessor()
     published = std::make_shared<const pcm::SampleBank>(slots);
 }
 
-PcmSynthProcessor::~PcmSynthProcessor() { apvts.removeParameterListener("combi", this); cancelPendingUpdate(); }
+PcmSynthProcessor::~PcmSynthProcessor() { pianoLoader.reset(); apvts.removeParameterListener("combi", this); cancelPendingUpdate(); }
 
 bool PcmSynthProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
@@ -110,6 +110,7 @@ void PcmSynthProcessor::loadCombination(int index)
 void PcmSynthProcessor::prepareToPlay(double sampleRate, int)
 {
     engine.prepare(sampleRate);
+    if (!pianoRequested.exchange(true)) startDefaultPianoLoad();
     applyParameters();
     keyboardState.reset();
 }
@@ -149,6 +150,8 @@ void PcmSynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     {
         auto pb = std::atomic_load(&published);
         if (pb != audioBank) { audioBank = pb; engine.setBank(pb); }
+        auto pp = std::atomic_load(&pianoPub); const bool on = pianoEnabled.load();
+        if (pp != audioPiano || on != audioPianoOn) { audioPiano = pp; audioPianoOn = on; engine.setPiano(pp, on); }
     }
 
     float* l = buffer.getWritePointer(0);
@@ -190,6 +193,12 @@ void PcmSynthProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
+    {
+        state.removeChild(state.getChildWithName("PIANO"), nullptr);
+        juce::ValueTree pv("PIANO"); pv.setProperty("folder", getPianoFolder().getFullPathName(), nullptr);
+        pv.setProperty("quality", pianoQuality.load(), nullptr); pv.setProperty("enabled", pianoEnabled.load(), nullptr);
+        state.appendChild(pv, nullptr);
+    }
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -202,10 +211,118 @@ void PcmSynthProcessor::setStateInformation(const void* data, int sizeInBytes)
             auto tree = juce::ValueTree::fromXml(*xml);
             auto smp = tree.getChildWithName("SAMPLES");
             if (smp.isValid()) tree.removeChild(smp, nullptr);
+            auto pv = tree.getChildWithName("PIANO");
+            if (pv.isValid()) tree.removeChild(pv, nullptr);
             apvts.replaceState(tree);
             restoring = false;
             if (smp.isValid()) samplesFromTree(smp);
+            if (pv.isValid())
+            {
+                pianoEnabled = (bool) pv.getProperty("enabled", true);
+                const juce::File f(pv.getProperty("folder").toString());
+                if (f.isDirectory()) loadPianoFolder(f, (int) pv.getProperty("quality", 1)); else pianoRequested = true;
+            }
         }
+}
+
+//==============================================================================
+// real piano: multisampled folder loader
+class PcmSynthProcessor::PianoLoader : public juce::Thread
+{
+public:
+    PianoLoader(PcmSynthProcessor& o, juce::File f, int q) : juce::Thread("PCM piano loader"), owner(o), folder(std::move(f)), quality(q) { startThread(juce::Thread::Priority::background); }
+    ~PianoLoader() override { stopThread(20000); }
+
+    void run() override
+    {
+        owner.pianoBusy = true; owner.pianoProgress = 0.0f;
+        auto status = [this](const juce::String& s) { const juce::ScopedLock sl(owner.pianoLock); owner.pianoStatus = s; };
+        status("Scanning " + folder.getFileName() + " ...");
+        juce::Array<juce::File> files;
+        folder.findChildFiles(files, juce::File::findFiles, true, "*.wav;*.flac;*.aif;*.aiff;*.ogg");
+        struct Item { juce::File f; int midi, layer; };
+        std::vector<Item> items; std::set<int> layerNums;
+        for (auto& f : files)
+        {
+            int midi, layer; if (!pcm::parsePianoName(f.getFileNameWithoutExtension().toStdString(), midi, layer)) continue;
+            items.push_back({ f, midi, layer }); layerNums.insert(layer);
+        }
+        if (items.empty())
+        {
+            status("No piano notes found in that folder. Expected file names like A0v1.wav, C1v8.wav, D#1v16.wav.");
+            owner.pianoBusy = false; return;
+        }
+        // choose which velocity layers to keep
+        std::vector<int> all(layerNums.begin(), layerNums.end()), keep;
+        const int want = quality <= 0 ? 4 : quality == 1 ? 8 : 1000;
+        if ((int) all.size() <= want) keep = all;
+        else for (int i = 0; i < want; ++i) keep.push_back(all[(size_t) juce::roundToInt((double) i * (double) (all.size() - 1) / (double) (want - 1))]);
+        std::map<int, int> layerIndex; for (size_t i = 0; i < keep.size(); ++i) layerIndex[keep[i]] = (int) i;
+        std::set<int> rootSet; std::vector<Item> todo;
+        for (auto& it : items) if (layerIndex.count(it.layer)) { todo.push_back(it); rootSet.insert(it.midi); }
+
+        auto set = std::make_shared<pcm::PianoSet>();
+        set->roots.assign(rootSet.begin(), rootSet.end()); set->layers = (int) keep.size();
+        set->a.assign(set->roots.size() * (size_t) set->layers, nullptr);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        int done = 0, failed = 0;
+        for (auto& it : todo)
+        {
+            if (threadShouldExit()) { owner.pianoBusy = false; return; }
+            std::unique_ptr<juce::AudioFormatReader> rd(fm.createReaderFor(it.f));
+            if (rd && rd->lengthInSamples > 64 && rd->sampleRate > 0)
+            {
+                const int frames = (int) std::min<juce::int64>(rd->lengthInSamples, (juce::int64) (14.0 * rd->sampleRate));
+                const int ch = (int) std::min<unsigned>(rd->numChannels, 2u);
+                juce::AudioBuffer<float> buf(ch, frames); rd->read(&buf, 0, frames, 0, true, ch > 1);
+                const int fade = std::min(frames / 4, (int) (0.6 * rd->sampleRate));
+                for (int c = 0; c < ch; ++c) { float* d = buf.getWritePointer(c); for (int i = 0; i < fade; ++i) d[frames - 1 - i] *= (float) i / (float) fade; }
+                std::vector<float> l(buf.getReadPointer(0), buf.getReadPointer(0) + frames), r;
+                if (ch > 1) r.assign(buf.getReadPointer(1), buf.getReadPointer(1) + frames);
+                const size_t ri = (size_t) (std::lower_bound(set->roots.begin(), set->roots.end(), it.midi) - set->roots.begin());
+                set->a[ri * (size_t) set->layers + (size_t) layerIndex[it.layer]] = pcm::makeAudio(std::move(l), std::move(r), rd->sampleRate);
+            }
+            else ++failed;
+            ++done; owner.pianoProgress = (float) done / (float) todo.size();
+            if ((done & 7) == 0) status("Loading piano ... " + juce::String(done) + " / " + juce::String((int) todo.size()) + " files");
+        }
+        set->info = juce::String((int) set->roots.size()).toStdString() + " notes x " + juce::String(set->layers).toStdString() + " layers";
+        {
+            const juce::ScopedLock sl(owner.pianoLock);
+            owner.pianoRetired = owner.pianoHeld; owner.pianoHeld = set;       // keep the old set alive until the next load
+            owner.pianoStatus = "Piano ready: " + juce::String(set->info) + " from \"" + folder.getFileName() + "\""
+                              + (failed ? " (" + juce::String(failed) + " unreadable files skipped)" : juce::String());
+        }
+        std::atomic_store(&owner.pianoPub, std::shared_ptr<const pcm::PianoSet>(set));
+        owner.pianoReady = true; owner.pianoBusy = false; owner.pianoProgress = 1.0f;
+    }
+private:
+    PcmSynthProcessor& owner; juce::File folder; int quality;
+};
+
+void PcmSynthProcessor::loadPianoFolder(const juce::File& folder, int quality)
+{
+    pianoRequested = true;
+    pianoLoader.reset();                                    // stops a load already in progress
+    { const juce::ScopedLock sl(pianoLock); pianoFolder = folder; }
+    pianoQuality = juce::jlimit(0, 2, quality);
+    savePianoDefault();
+    pianoLoader = std::make_unique<PianoLoader>(*this, folder, pianoQuality.load());
+}
+
+static juce::File pianoDefaultFile() { return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("PCMWorkstation").getChildFile("piano.txt"); }
+
+void PcmSynthProcessor::savePianoDefault() const
+{
+    const auto f = pianoDefaultFile(); f.getParentDirectory().createDirectory();
+    f.replaceWithText(getPianoFolder().getFullPathName() + "\n" + juce::String(pianoQuality.load()));
+}
+
+void PcmSynthProcessor::startDefaultPianoLoad()
+{
+    const auto f = pianoDefaultFile(); if (!f.existsAsFile()) return;
+    juce::StringArray lines; lines.addLines(f.loadFileAsString());
+    if (lines.size() >= 1 && juce::File(lines[0]).isDirectory()) loadPianoFolder(juce::File(lines[0]), lines.size() > 1 ? lines[1].getIntValue() : 1);
 }
 
 //==============================================================================

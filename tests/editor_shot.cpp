@@ -27,5 +27,6 @@ int main(int argc, char** argv)
     click("PADS"); pr.keyboardState.noteOn(1, kPadBase + 1, 0.9f); pr.keyboardState.noteOn(1, kPadBase + 6, 0.4f);
     { juce::AudioBuffer<float> b(2, 512); juce::MidiBuffer m; pr.processBlock(b, m); }
     shot("tab_pads.png");
+    click("PIANO"); shot("tab_piano.png");
     return 0;
 }

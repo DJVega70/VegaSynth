@@ -72,3 +72,9 @@ The **PADS** tab is a 4x4 grid; pad N plays slot N on key 35+N (C1..D#2), so MID
 - `tests/sample_test.cpp`: 29 checks (pitch tracking, loops, one-shots, key/velocity layers, pan, filter, safe bank swap). All pass.
 - `tests/processor_smoke.cpp`: real WAV into slot, pad key sounds (velocity 30 -> peak 0.36, 120 -> 0.64), empty pad silent, samples survive save/restore (120 KB state for a 0.5 s stereo sample), 50 bank swaps during playback.
 - Loaded as a VST3 through JUCE's plugin host: OK.
+
+## Grand Piano (P00)
+A concert-grand style piano generated from a physical-style model (seven notes from A0-range bass to C7, nearest one used): stiff-string inharmonic partials, hammer-strike comb, the two-stage decay of real pianos (prompt sound plus a slow aftersound from detuned unison strings), warm soundboard body, a full bass with a tamed fundamental, and a soft felt thump. No looped tone underneath. Pitch is correct from MIDI 24 to 96 (measured). The on-screen keyboard scrolls from MIDI 12 to 108 with the arrows at its ends.
+
+## Real piano (PIANO tab)
+Load a multisampled piano folder (made for the free Salamander Grand Piano V3, 16-bit 44.1 kHz WAV, CC BY 3.0 - credit it if you release music with it). Files are read by name: note + velocity layer, e.g. `A0v1.wav`, `D#1v16.wav`, `Fs3v8.wav`; release/pedal/noise files are ignored. Each key plays the nearest recorded note (pitched at most 1-2 semitones) and the velocity picks the recorded layer. Quality sets how many velocity layers are kept in RAM (Light 4 / Medium 8 / Full 16). Loading runs in the background; the folder is remembered per project and for new instances. Without a folder the built-in synth piano plays. `tests/piano_test.cpp` + `tools/make_fake_piano.py` test the loader with a fake sample set (name parsing, mapping, pitch, velocity layers, project reload).

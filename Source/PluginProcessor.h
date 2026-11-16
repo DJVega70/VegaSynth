@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include "Engine.h"
 #include "SampleTools.h"
+#include "PianoSet.h"
 
 constexpr int kPadBase = 36;   // the 16 touch pads play keys 36..51 (C1 up)
 
@@ -56,7 +57,29 @@ public:
     std::atomic<int> slotsVersion { 0 };
     std::array<std::atomic<float>, 16> padHit;   // last hit velocity per pad (0..1), set by incoming MIDI
 
+    // ---- real piano (multisampled folder, e.g. Salamander Grand Piano) - loaded on a background thread
+    void loadPianoFolder(const juce::File& folder, int quality);      // quality 0 = 4 layers, 1 = 8, 2 = all
+    void setPianoEnabled(bool on) { pianoEnabled = on; }
+    bool isPianoEnabled() const { return pianoEnabled.load(); }
+    juce::String getPianoStatus() const { const juce::ScopedLock sl(pianoLock); return pianoStatus; }
+    juce::File getPianoFolder() const { const juce::ScopedLock sl(pianoLock); return pianoFolder; }
+    int getPianoQuality() const { return pianoQuality.load(); }
+    std::atomic<float> pianoProgress { 0.0f };
+    std::atomic<bool> pianoBusy { false }, pianoReady { false };
+
 private:
+    class PianoLoader;
+    void startDefaultPianoLoad();
+    void savePianoDefault() const;
+    mutable juce::CriticalSection pianoLock;
+    juce::String pianoStatus { "No piano folder loaded - using the built-in synth piano." };
+    juce::File pianoFolder;
+    std::atomic<int> pianoQuality { 1 };
+    std::atomic<bool> pianoEnabled { true }, pianoRequested { false };
+    std::shared_ptr<const pcm::PianoSet> pianoPub, pianoHeld, pianoRetired, audioPiano;
+    bool audioPianoOn = false;
+    std::unique_ptr<PianoLoader> pianoLoader;
+
     void parameterChanged(const juce::String& id, float) override;
     void handleAsyncUpdate() override;
     void applyParameters();

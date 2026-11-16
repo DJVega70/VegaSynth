@@ -23,6 +23,7 @@ struct Program
     float lfoRate = 5.0f, lfoPitch = 0, lfoFilt = 0, lfoAmp = 0;     // LFO (Hz, semitones, octaves, depth)
     float velAmp = 0.5f, velFlt = 0.5f;                              // velocity sensitivity
     float level = 0.7f;
+    float loopLvl = 1.0f;             // level of the looped oscillators (0 = attack sample only)
 };
 
 struct PartCfg
@@ -56,7 +57,7 @@ inline std::vector<Program> makePrograms()
 {
     //                name            w1 w2 l2   s2  det atk aLv xf    cut  res  env  kt   aA    aD   aS   aR    fA    fD   fS   fR   lfoR lfoP  lfoF va   vf   lvl
     std::vector<Program> b = {
-        mk("Grand Piano", 9, 4, 0.0f, 0, 0, 1, 0.9f, 0.12f, 5000, .10f, 2.5f, .9f, .002f, 2.2f, .0f, .35f, .001f, .9f, .1f, .3f, 0, 0, 0, .7f, .6f, .8f),
+        mk("Grand Piano", 9, 0, 0.0f, 0, 0, 14, 1.0f, 0.0f, 12000, .03f, 0.6f, .6f, .001f, 14.0f, .0f, .40f, .001f, .9f, .45f, .35f, 0, 0, 0, .75f, .9f, .8f),
         mk("E.Piano", 10, 0, 0.25f, 12, 0, 2, 0.8f, 0.10f, 5000, .15f, 1.5f, .7f, .002f, 1.8f, .15f, .4f, .001f, .5f, .3f, .3f, 0, 0, 0, .7f, .8f, .8f),
         mk("Organ", 5, 5, 0.0f, 0, 0, 10, 0.2f, 0.0f, 9000, .05f, 0.0f, .5f, .005f, .1f, 1.0f, .05f, .005f, .3f, .5f, .3f, 6.0f, 0, 0, .1f, .5f, .7f),
         mk("Organ 2", 6, 5, 0.5f, 12, 0, 10, 0.5f, 0.0f, 7000, .10f, 0.0f, .5f, .003f, .1f, 1.0f, .08f, .005f, .3f, .5f, .3f, 6.0f, 0, 0, .1f, .5f, .7f),
@@ -82,6 +83,8 @@ inline std::vector<Program> makePrograms()
         mk("Accordion", 25, 15, 0.6f, 0, 10, 7, 0.3f, 0.05f, 4500, .10f, 1.0f, .5f, .04f, .1f, .95f, .12f, .04f, .2f, .6f, .15f, 6.0f, .03f, 0, .3f, .5f, .7f),
         mk("Atmosphere", 20, 27, 0.6f, 12, 9, 6, 0.35f, 0.2f, 3000, .20f, 2.0f, .5f, .6f, .8f, .8f, 1.5f, 1.0f, 2.0f, .5f, 1.5f, 0.4f, .04f, 0, .4f, .5f, .6f),
     };
+    b[0].loopLvl = 0.0f;   // Grand Piano is the multisampled piano only - no sustained loop underneath
+
     std::vector<Program> all;
     all.reserve(101);
     for (int v = 0; v < 4; ++v)

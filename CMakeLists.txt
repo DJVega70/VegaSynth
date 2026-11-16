@@ -63,3 +63,8 @@ add_executable(editor_shot EXCLUDE_FROM_ALL tests/editor_shot.cpp Source/PluginP
 target_include_directories(editor_shot PRIVATE ${CMAKE_BINARY_DIR}/PcmWorkstation_artefacts/JuceLibraryCode ${juce_SOURCE_DIR}/modules)
 target_compile_definitions(editor_shot PRIVATE $<TARGET_PROPERTY:PcmWorkstation,COMPILE_DEFINITIONS> JUCE_STANDALONE_APPLICATION=0 JUCE_MODAL_LOOPS_PERMITTED=1)
 target_link_libraries(editor_shot PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)
+
+add_executable(piano_test EXCLUDE_FROM_ALL tests/piano_test.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
+target_include_directories(piano_test PRIVATE ${CMAKE_BINARY_DIR}/PcmWorkstation_artefacts/JuceLibraryCode ${juce_SOURCE_DIR}/modules)
+target_compile_definitions(piano_test PRIVATE $<TARGET_PROPERTY:PcmWorkstation,COMPILE_DEFINITIONS> JUCE_STANDALONE_APPLICATION=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(piano_test PRIVATE juce::juce_audio_utils juce::juce_recommended_config_flags)

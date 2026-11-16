@@ -17,7 +17,8 @@ namespace pcm
 constexpr int kTable = 2048;          // samples per single-cycle loop
 constexpr int kZones = 22;            // 6 semitones per zone
 constexpr int kNumLoops = 28;
-constexpr int kNumAttacks = 14;
+constexpr int kNumAttacks = 21;      // 0..13 one-shot transients, 14..20 = piano multisample (MIDI 24,36,48,60,72,84,96)
+constexpr int kPianoAttack = 14;
 constexpr double kAttackRate = 44100.0;
 constexpr double kAttackRoot = 261.6255653005986;   // attacks are stored at C4
 constexpr double kTwoPi = 6.283185307179586;
@@ -75,6 +76,13 @@ public:
     {
         return &loops[((size_t) std::max(0, std::min(kNumLoops - 1, wave)) * kZones + (size_t) std::max(0, std::min(kZones - 1, zone))) * (kTable + 1)];
     }
+    // Id kPianoAttack selects the nearest of five piano samples for the played note.
+    static int attackFor(int id, int note)
+    {
+        if (id != kPianoAttack) return id;
+        return kPianoAttack + std::max(0, std::min(6, (note - 24 + 6) / 12));
+    }
+    static double attackRootNote(int id) { return id >= kPianoAttack ? 24.0 + 12.0 * (id - kPianoAttack) : 60.0; }
     const std::vector<float>& attack(int id) const { return attacks[(size_t) std::max(0, std::min(kNumAttacks - 1, id))]; }
     size_t totalSamples() const { size_t n = loops.size(); for (auto& a : attacks) n += a.size(); return n; }
 
@@ -131,6 +139,63 @@ private:
         uint32_t s = 22222u;
         float next() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (float) ((double) s / 2147483648.0 - 1.0); }
     };
+
+
+    // Concert-grand piano note, generated (not sampled): inharmonic stiff-string partials, hammer-strike comb,
+    // the two-stage decay of real pianos (a fast "prompt" sound and a slow "aftersound" from detuned unison strings,
+    // which is where the slow beating comes from), a warm soundboard body, a strong bass with the fundamental
+    // tamed the way real bass strings behave, and a soft felt thump.
+    static std::vector<float> makePiano(int root)
+    {
+        const double fs = kAttackRate, f0 = 440.0 * std::pow(2.0, (root - 69) / 12.0);
+        const double seconds = root <= 24 ? 10.0 : root <= 36 ? 8.5 : root <= 48 ? 6.5 : root <= 60 ? 5.0 : root <= 72 ? 3.6 : root <= 84 ? 2.6 : 1.8;
+        const size_t N = (size_t) (seconds * fs);
+        std::vector<float> v(N, 0.0f);
+        const double B = 0.00009 * std::pow(2.0, (root - 36) / 14.0);
+        const double T0 = root <= 24 ? 9.0 : root <= 36 ? 7.5 : root <= 48 ? 5.5 : root <= 60 ? 4.0 : root <= 72 ? 2.8 : root <= 84 ? 1.6 : 1.0;
+        const double low = std::max(0.0, std::min(1.0, (55.0 - root) / 30.0));      // 1 deep bass .. 0 above ~G3
+        auto formant = [](double f, double fc, double bw) { const double d = (f - fc) / bw; return 1.0 / (1.0 + d * d); };
+        Rng rng;
+        auto phasor = [&](double f, double tau, double amp, double ph0)
+        {
+            const double w = kTwoPi * f / fs, r = std::exp(-1.0 / (tau * fs));
+            double re = std::cos(ph0), im = std::sin(ph0); const double cr = r * std::cos(w), ci = r * std::sin(w);
+            for (size_t i = 0; i < N; ++i)
+            {
+                v[i] += (float) (amp * im);
+                const double nr = re * cr - im * ci; im = re * ci + im * cr; re = nr;
+                if (re * re + im * im < 1.0e-10) break;
+            }
+        };
+        for (int k = 1; k <= 56; ++k)
+        {
+            const double fk = f0 * k * std::sqrt(1.0 + B * k * k);
+            if (fk > 11000.0) break;
+            const double strike = 0.25 + 0.75 * std::fabs(std::sin(3.14159265358979 * k / 8.0));   // hammer strikes ~1/8 along the string
+            double a = strike * std::pow((double) k, -0.9) / (1.0 + std::pow(k / 22.0, 3.0));
+            if (k == 1) a *= 1.0 - 0.5 * low;                  // bass strings: weak fundamental, strong 2nd-6th partials
+            else if (k <= 6) a *= 1.0 + 1.1 * low;
+            a *= 1.0 + 0.9 * formant(fk, 260.0, 220.0) + 0.5 * formant(fk, 2300.0, 1100.0);      // soundboard warmth + presence
+            if (a < 5.0e-5) continue;
+            const double tauSlow = T0 / (1.0 + 0.35 * (k - 1) + 0.012 * k * k), tauFast = tauSlow / 7.0;
+            const double d1 = (0.18 + 0.010 * k) * (0.7 + 0.6 * (double) ((k * 7919) % 11) / 11.0);   // unison detune, Hz
+            const double d2 = (0.31 + 0.013 * k) * (0.7 + 0.6 * (double) ((k * 104729) % 13) / 13.0);
+            const double ph = (double) rng.next() * 3.14159265;
+            phasor(fk, tauFast, 0.62 * a, ph);                             // prompt sound
+            phasor(fk - d1, tauSlow, 0.20 * a, ph + 0.7);                  // aftersound, strings 2 and 3
+            phasor(fk + d2, tauSlow, 0.18 * a, ph + 1.9);
+        }
+        // felt-hammer thump: a little more body in the bass, never hissy
+        { double y = 0; const double c = 1.0 - std::exp(-kTwoPi * (350.0 + 900.0 * (1.0 - low)) / fs);
+          const double amp = 0.10 + 0.22 * low;
+          for (size_t i = 0; i < (size_t) (0.03 * fs); ++i) { y += c * (rng.next() - y); v[i] += (float) (amp * y * std::exp(-(double) i / (0.008 * fs))); } }
+        for (size_t i = 0; i < 40; ++i) v[i] *= (float) i / 40.0f;
+        float pk = 1.0e-9f; for (float x : v) pk = std::max(pk, std::fabs(x));
+        for (float& x : v) x /= pk;
+        const size_t fade = std::min<size_t>(N / 8, 4000);
+        for (size_t i = 0; i < fade; ++i) v[N - 1 - i] *= (float) i / (float) fade;
+        return v;
+    }
 
     static std::vector<float> makeAttack(int id)
     {
@@ -208,6 +273,7 @@ private:
                 { double ph = 0; for (size_t i = 0; i < v.size(); ++i) { const double t = (double) i / fs; const double f = 50.0 + 100.0 * env(t, 0.03);
                     ph += kTwoPi * f / fs; v[i] = (float) (std::sin(ph) * env(t, 0.08)); } }
                 break;
+            case 14: case 15: case 16: case 17: case 18: case 19: case 20: return makePiano(24 + 12 * (id - 14));
             default: v.assign(100, 0.0f);
         }
         float pk = 1.0e-9f;

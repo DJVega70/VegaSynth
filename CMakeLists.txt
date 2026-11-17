@@ -11,12 +11,17 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(JUCE)
 
+set(VEGA_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND VEGA_FORMATS AU)
+endif()
+
 juce_add_plugin(PcmWorkstation
-    COMPANY_NAME "StudioTools"
+    COMPANY_NAME "Vega Productions"
     PLUGIN_MANUFACTURER_CODE Stlz
     PLUGIN_CODE Pcm1
-    FORMATS VST3 Standalone
-    PRODUCT_NAME "PCM Workstation"
+    FORMATS ${VEGA_FORMATS}
+    PRODUCT_NAME "Vega Productions Workstation"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE

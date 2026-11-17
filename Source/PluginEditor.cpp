@@ -1,67 +1,20 @@
 #include "PluginEditor.h"
+#include "VegaUI.h"
 #include <map>
 
 namespace
 {
-    const juce::Colour panelTop { 0xff2b2d33 }, panelBottom { 0xff17181c }, ink { 0xffe9e4d8 }, dim { 0xff9a968c };
-    const juce::Colour amber { 0xffffb23e }, lcdBg { 0xff120d05 }, teal { 0xff3fa7a0 }, red { 0xffc8412f },
-                       blue { 0xff3f78b8 }, green { 0xff4f9a64 }, slate { 0xff6a707a }, cream { 0xffcfc7b0 };
+    // Vega Productions palette (names kept from the original design)
+    const juce::Colour panelTop { 0xff303030 }, panelBottom { 0xff262626 }, ink { 0xffd8d8d8 }, dim { 0xff8e8e8e };
+    const juce::Colour amber { 0xff7ff7f2 }, lcdBg { 0xff050505 }, teal { 0xffd9b45a }, red { 0xffff5a5a },
+                       blue { 0xff9a9a9a }, green { 0xff9a9a9a }, slate { 0xff9a9a9a }, cream { 0xffd8d8d8 };
     constexpr float kPi = juce::MathConstants<float>::pi;
 
-    void screw(juce::Graphics& g, float x, float y)
-    {
-        g.setColour(juce::Colours::black.withAlpha(0.5f)); g.fillEllipse(x - 5, y - 4, 10, 10);
-        g.setGradientFill(juce::ColourGradient(juce::Colour(0xff8b8e94), x - 4, y - 5, juce::Colour(0xff3c3e43), x + 4, y + 5, false));
-        g.fillEllipse(x - 5, y - 5, 10, 10);
-        g.setColour(juce::Colour(0xff1b1c1f)); g.drawLine(x - 3, y + 1, x + 3, y - 1, 1.4f);
-    }
 }
 
 //==============================================================================
-class SynthLook : public juce::LookAndFeel_V4
+class SynthLook : public VegaLookAndFeel
 {
-public:
-    SynthLook()
-    {
-        setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff0d0e10));
-        setColour(juce::ComboBox::textColourId, ink);
-        setColour(juce::ComboBox::outlineColourId, juce::Colours::white.withAlpha(0.15f));
-        setColour(juce::ComboBox::arrowColourId, amber);
-        setColour(juce::PopupMenu::backgroundColourId, juce::Colour(0xff1b1c20));
-        setColour(juce::PopupMenu::textColourId, ink);
-        setColour(juce::PopupMenu::highlightedBackgroundColourId, amber.darker(0.4f));
-        setColour(juce::Slider::backgroundColourId, juce::Colour(0xff0d0e10));
-        setColour(juce::Slider::trackColourId, amber.darker(0.5f));
-        setColour(juce::Slider::textBoxTextColourId, ink);
-        setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    }
-    juce::Font getComboBoxFont(juce::ComboBox&) override { return juce::FontOptions(12.0f); }
-
-    void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float, float startAngle, float endAngle, juce::Slider& s) override
-    {
-        const auto b = juce::Rectangle<float>((float) x, (float) y, (float) w, (float) h);
-        const float d = juce::jmin(b.getWidth(), b.getHeight()) - 6.0f;
-        const auto c = b.getCentre();
-        const float ang = startAngle + (float) s.valueToProportionOfLength(s.getValue()) * (endAngle - startAngle);
-        const juce::Colour cap((juce::uint32) (int) s.getProperties()["cap"]);
-        g.setColour(dim.withAlpha(0.8f));
-        for (int i = 0; i <= 10; ++i)
-        {
-            const float a = startAngle + (float) i / 10.0f * (endAngle - startAngle), r0 = d * 0.5f + 2.5f, r1 = r0 + (i % 5 == 0 ? 4.5f : 2.5f);
-            g.drawLine(c.x + std::sin(a) * r0, c.y - std::cos(a) * r0, c.x + std::sin(a) * r1, c.y - std::cos(a) * r1, 1.0f);
-        }
-        g.setColour(juce::Colours::black.withAlpha(0.55f)); g.fillEllipse(c.x - d * 0.5f + 1, c.y - d * 0.5f + 3, d, d);
-        g.setColour(juce::Colour(0xff0c0d0f)); g.fillEllipse(c.x - d * 0.5f, c.y - d * 0.5f, d, d);
-        const float cd = d - 6.0f;
-        g.setGradientFill(juce::ColourGradient(cap.brighter(0.25f), c.x - cd * 0.3f, c.y - cd * 0.5f, cap.darker(0.55f), c.x + cd * 0.3f, c.y + cd * 0.5f, false));
-        g.fillEllipse(c.x - cd * 0.5f, c.y - cd * 0.5f, cd, cd);
-        g.setColour(juce::Colours::white.withAlpha(0.18f)); g.drawEllipse(c.x - cd * 0.5f + 0.5f, c.y - cd * 0.5f + 0.5f, cd - 1, cd - 1, 1.0f);
-        const float td = cd * 0.62f;
-        g.setGradientFill(juce::ColourGradient(cap.brighter(0.05f), c.x, c.y - td * 0.5f, cap.darker(0.3f), c.x, c.y + td * 0.5f, false));
-        g.fillEllipse(c.x - td * 0.5f, c.y - td * 0.5f, td, td);
-        juce::Path p; p.addRoundedRectangle(-1.4f, -cd * 0.5f + 1.0f, 2.8f, cd * 0.42f, 1.2f);
-        g.setColour(juce::Colours::white.withAlpha(0.95f)); g.fillPath(p, juce::AffineTransform::rotation(ang).translated(c.x, c.y));
-    }
 };
 
 class Knob : public juce::Component
@@ -206,9 +159,9 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto head = [&](const juce::String& t, int x, int y, int w, juce::Colour c) {
-            g.setColour(c); g.fillRoundedRectangle((float) x, (float) y + 2, 4.0f, 12.0f, 1.5f);
-            g.setColour(ink.withAlpha(0.9f)); g.setFont(juce::FontOptions(11.0f, juce::Font::bold)); g.drawText(t, x + 10, y, w, 16, juce::Justification::centredLeft);
-            g.setColour(juce::Colours::white.withAlpha(0.10f)); g.drawHorizontalLine(y + 19, (float) x, (float) (x + w)); };
+            juce::ignoreUnused(c);
+            g.setColour(dim.withAlpha(0.8f)); g.setFont(VegaFonts::ui(9.5f, true)); g.drawText(t, x, y, w, 16, juce::Justification::centredLeft);
+            g.setColour(juce::Colour(0xff3e3e3e)); g.drawHorizontalLine(y + 19, (float) x, (float) (x + w)); };
         head("USER SAMPLES", 4, 0, 244, amber);
         head("WAVEFORM", 266, 0, 674, teal);
         for (int i = 0; i < pcm::kUserSlots; ++i)
@@ -400,7 +353,7 @@ public:
             "1. Download the Salamander Grand Piano V3, the 16-bit 44.1 kHz WAV version, from its page on sfzinstruments.github.io (free, license CC BY 3.0 - give credit if you release music with it).\n"
             "2. Unzip it anywhere on your computer.\n"
             "3. Press LOAD PIANO FOLDER and pick the unzipped folder (the one with files like A0v1.wav and C4v10.wav). Subfolders are searched.\n"
-            "4. Wait for the bar to finish. The folder is remembered, so new PCM Workstation instances load it automatically.\n\n"
+            "4. Wait for the bar to finish. The folder is remembered, so new Workstation instances load it automatically.\n\n"
             "Any other piano recorded as note + velocity files works too, if the file names contain the note and layer, like C4v8.wav or F#3_v12.wav.\n"
             "Until a folder is loaded, the built-in synth piano plays.",
             juce::Rectangle<int>(10, 190, 920, 200), juce::Justification::topLeft, 12);
@@ -613,24 +566,25 @@ public:
     void paint(juce::Graphics& g) override
     {
         g.setGradientFill(juce::ColourGradient(panelTop, 0, 0, panelBottom, 0, (float) getHeight(), false)); g.fillAll();
-        juce::Random rng(9); g.setColour(juce::Colours::white.withAlpha(0.02f));
-        for (int y = 0; y < getHeight(); y += 2) if (rng.nextInt(3) == 0) g.drawHorizontalLine(y, 0.0f, (float) getWidth());
-        g.setColour(juce::Colours::black.withAlpha(0.6f)); g.drawRect(getLocalBounds(), 2);
-        screw(g, 12, 12); screw(g, getWidth() - 12.0f, 12); screw(g, 12, getHeight() - 12.0f); screw(g, getWidth() - 12.0f, getHeight() - 12.0f);
-
-        // brand
-        g.setColour(ink); g.setFont(juce::FontOptions(36.0f, juce::Font::bold)); g.drawText("PCM", 30, 22, 220, 40, juce::Justification::centredLeft);
-        g.setColour(amber); g.setFont(juce::FontOptions(14.0f, juce::Font::bold)); g.drawText("WORKSTATION", 32, 60, 220, 18, juce::Justification::centredLeft);
-        g.setColour(dim); g.setFont(juce::FontOptions(9.5f)); g.drawText("16 voices  /  8 parts  /  100 programs  /  100 combinations", 32, 80, 240, 14, juce::Justification::centredLeft);
-
+        // brand (Vega Productions)
+        {
+            const juce::Point<float> c (42.0f, 38.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.9f));
+            g.drawEllipse(c.x - 12, c.y - 12, 24, 24, 1.6f);
+            juce::Path v; v.startNewSubPath(c.x - 6, c.y - 5); v.lineTo(c.x, c.y + 6); v.lineTo(c.x + 6, c.y - 5);
+            g.strokePath(v, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setFont(VegaFonts::ui(17.0f, true)); g.drawText("Vega Productions", 62, 26, 200, 24, juce::Justification::centredLeft);
+            g.setColour(dim); g.setFont(VegaFonts::ui(10.5f)); g.drawText("WORKSTATION  VP-5", 63, 50, 200, 14, juce::Justification::centredLeft);
+            g.setFont(VegaFonts::ui(9.5f)); g.drawText("16 voices  /  8 parts  /  100 programs  /  100 combis", 32, 74, 240, 14, juce::Justification::centredLeft);
+        }
         // LCD
         auto lcd = juce::Rectangle<float>(270, 16, 372, 88);
         g.setColour(juce::Colours::black.withAlpha(0.6f)); g.fillRoundedRectangle(lcd.translated(0, 2), 6.0f);
-        g.setGradientFill(juce::ColourGradient(lcdBg.brighter(0.08f), 0, lcd.getY(), lcdBg, 0, lcd.getBottom(), false)); g.fillRoundedRectangle(lcd, 6.0f);
+        g.setColour(juce::Colour(0xff101010)); g.fillRoundedRectangle(lcd, 3.0f); g.setColour(lcdBg); g.fillRect(lcd.reduced(4.0f));
         g.setColour(juce::Colours::white.withAlpha(0.14f)); g.drawRoundedRectangle(lcd, 6.0f, 1.0f);
-        g.setColour(amber); g.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 17.0f, juce::Font::bold));
+        g.setColour(juce::Colours::white.withAlpha(0.92f)); g.setFont(VegaFonts::mono(16.0f));
         g.drawText(lcd1, lcd.reduced(12, 8).removeFromTop(24), juce::Justification::centredLeft);
-        g.setColour(amber.withAlpha(0.8f)); g.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 12.5f, juce::Font::plain));
+        g.setColour(juce::Colours::white.withAlpha(0.8f)); g.setFont(VegaFonts::mono(12.0f));
         g.drawText(lcd2, lcd.reduced(12, 8).withTrimmedTop(26).removeFromTop(18), juce::Justification::centredLeft);
         g.drawText(lcd3, lcd.reduced(12, 8).withTrimmedTop(46).removeFromTop(18), juce::Justification::centredLeft);
         // output meter in the LCD
@@ -638,14 +592,14 @@ public:
         for (int i = 0; i < segs; ++i)
         {
             const float db = -60.0f + (float) (i + 1) / segs * 60.0f; const bool lit = lvl >= db - 1.2f;
-            g.setColour(lit ? (db > -3 ? red : amber) : amber.withAlpha(0.12f));
+            g.setColour(lit ? (db > -3 ? red : (db > -18 ? juce::Colours::white : amber)) : juce::Colour(0xff2a2a2a));
             g.fillRect(lcd.getX() + 12 + i * 10.5f, lcd.getBottom() - 15, 8.0f, 6.0f);
         }
 
         auto head = [&](const juce::String& t, int x, int y, int w, juce::Colour c) {
-            g.setColour(c); g.fillRoundedRectangle((float) x, (float) y + 2, 4.0f, 12.0f, 1.5f);
-            g.setColour(ink.withAlpha(0.9f)); g.setFont(juce::FontOptions(11.0f, juce::Font::bold)); g.drawText(t, x + 10, y, w, 16, juce::Justification::centredLeft);
-            g.setColour(juce::Colours::white.withAlpha(0.10f)); g.drawHorizontalLine(y + 19, (float) x, (float) (x + w)); };
+            juce::ignoreUnused(c);
+            g.setColour(dim.withAlpha(0.8f)); g.setFont(VegaFonts::ui(9.5f, true)); g.drawText(t, x, y, w, 16, juce::Justification::centredLeft);
+            g.setColour(juce::Colour(0xff3e3e3e)); g.drawHorizontalLine(y + 19, (float) x, (float) (x + w)); };
         if (curTab != 0) return;
         head("PARTS", 24, 122, 640, amber);
         head("TONE", 690, 122, 266, teal);
